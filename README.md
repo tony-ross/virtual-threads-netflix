@@ -1,351 +1,446 @@
-# 🎬 Netflix-Style Federated GraphQL Microservices
+# Design Document
 
-I was feeling inspired after watching Paul Bakker - Java Champion & Staff Software Engineer (Netflix) at JavaOne 2025 (CA, March 2025). He provided great insights into the new garbage collectors like generational ZGC, Virtual Threads, his view on native images.
+## Overview
 
-So here is my take on the Neflix microservices architecture patterns using Spring Boot 3, demonstrating the evolution from monolith to federated GraphQL microservices.
+This design implements practical structured concurrency patterns in the Netflix-style federated GraphQL microservices project using JDK 24's structured concurrency capabilities. The implementation transforms the existing theoretical foundation into a production-ready system that demonstrates concurrent data fetching, cross-service federation, timeout handling, and performance monitoring.
 
-## 📋 Project Overview
+The design leverages `StructuredTaskScope` for automatic resource management, fail-fast behavior, and timeout handling across the microservices architecture, with particular focus on GraphQL federation scenarios where multiple services need to be called concurrently.
 
-This project showcases a **complete three-phase transformation**:
+## Architecture
 
-1. **Phase 1**: Structured Monolith with REST APIs
-2. **Phase 2**: GraphQL Integration & Schema Stitching
-3. **Phase 3**: Federated Microservices Architecture
+### High-Level Architecture
 
-### 🏗️ Final Architecture (Phase 3)
-
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│  Client Apps    │    │   Web Browser   │    │  Mobile Apps    │
-└─────────┬───────┘    └─────────┬───────┘    └─────────┬───────┘
-          │                      │                      │
-          └──────────────────────┼──────────────────────┘
-                                 │
-                    ┌─────────────▼───────────────┐
-                    │     Gateway Service         │
-                    │    (GraphQL Federation)     │
-                    │       Port: 8080           │
-                    └─────────────┬───────────────┘
-                                  │
-        ┌─────────────────────────┼─────────────────────────┐
-        │                         │                         │
-┌───────▼────────┐    ┌───────────▼───────┐    ┌───────────▼────────┐
-│ Movies Service │    │  Users Service    │    │ Reviews Service    │
-│   Port: 8081   │    │   Port: 8082     │    │   Port: 8083      │
-└───────┬────────┘    └───────────┬───────┘    └───────────┬────────┘
-        │                         │                         │
-┌───────▼────────┐    ┌───────────▼───────┐    ┌───────────▼────────┐
-│ Movies DB      │    │  Users DB         │    │ Reviews DB         │
-│ Port: 5433     │    │  Port: 5434      │    │ Port: 5435        │
-└────────────────┘    └───────────────────┘    └────────────────────┘
+```mermaid
+graph TB
+    Client[GraphQL Client] --> Gateway[Gateway Service<br/>Port 8080]
+    
+    Gateway --> |Structured Concurrency| Movies[Movies Service<br/>Port 8081]
+    Gateway --> |Structured Concurrency| Users[Users Service<br/>Port 8082]
+    Gateway --> |Structured Concurrency| Reviews[Reviews Service<br/>Port 8083]
+    
+    Gateway --> Monitor[Monitoring & Metrics<br/>Actuator Endpoints]
+    
+    subgraph "Structured Concurrency Layer"
+        SC[StructuredConcurrencyService]
+        Scope[StructuredTaskScope]
+        VT[Virtual Thread Executor]
+        TO[Timeout Manager]
+    end
+    
+    Gateway --> SC
+    Movies --> SC
+    Users --> SC
+    Reviews --> SC
 ```
 
-## 🚀 Quick Start
+### Concurrency Flow Pattern
 
-### Prerequisites
-- Java 21+
-- Docker and Docker Compose
-- IntelliJ
-
-### Run All Microservices (Phase 3)
-
-```bash
-# Start all services with Docker Compose
-docker-compose -f docker-compose-microservices.yml up --build
-
-# Or run individual services for development
-cd services/movies-service && ./gradlew bootRun    # Terminal 1
-cd services/users-service && ./gradlew bootRun     # Terminal 2
-cd services/reviews-service && ./gradlew bootRun   # Terminal 3
-cd services/gateway-service && ./gradlew bootRun   # Terminal 4
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Gateway
+    participant Movies
+    participant Reviews
+    participant Users
+    
+    Client->>Gateway: query { movie(id: "1") { title reviews { text user { username } } } }
+    
+    Gateway->>Gateway: Create StructuredTaskScope.ShutdownOnFailure
+    
+    par Concurrent Execution
+        Gateway->>Movies: fork(() -> getMovie(1))
+        Gateway->>Reviews: fork(() -> getReviews(movieId: 1))
+        Gateway->>Users: fork(() -> getUsers(reviewUserIds))
+    end
+    
+    Gateway->>Gateway: scope.join() - Wait for all tasks
+    Gateway->>Gateway: scope.throwIfFailed() - Check for failures
+    
+    alt All Success
+        Gateway->>Gateway: Combine results
+        Gateway->>Client: Federated response
+    else Any Failure
+        Gateway->>Gateway: Auto-cancel remaining tasks
+        Gateway->>Client: Error response
+    end
 ```
 
-### Run Original Monolith (Phase 1)
+## Components and Interfaces
 
-```bash
-# Start PostgreSQL
-docker-compose up -d
+### 1. Enhanced StructuredConcurrencyService
 
-# Run the monolith
-./gradlew bootRun
-```
+**Location**: `services/gateway-service/src/main/java/com/netflix/gateway/service/StructuredConcurrencyService.java`
 
-## 🔗 Service Endpoints
-
-| Service | REST API | GraphQL | GraphiQL | Health |
-|---------|----------|---------|----------|--------|
-| **Gateway** | N/A | http://localhost:8080/graphql | http://localhost:8080/graphiql | http://localhost:8080/actuator/health |
-| **Movies** | http://localhost:8081/api/movies | http://localhost:8081/graphql | http://localhost:8081/graphiql | http://localhost:8081/actuator/health |
-| **Users** | http://localhost:8082/api/users | http://localhost:8082/graphql | http://localhost:8082/graphiql | http://localhost:8082/actuator/health |
-| **Reviews** | http://localhost:8083/api/reviews | http://localhost:8083/graphql | http://localhost:8083/graphiql | http://localhost:8083/actuator/health |
-| **Monolith** | http://localhost:8080/api/* | http://localhost:8080/graphql | http://localhost:8080/graphiql | http://localhost:8080/actuator/health |
-
-## 📊 Technology Stack
-
-### Core Technologies
-- **Java 24** - Latest LTS with Virtual Threads and Structured Concurrency
-- **Spring Boot 3.2.2** - Enterprise application framework
-- **Spring Data JPA** - Data persistence layer
-- **PostgreSQL 15** - Primary database
-- **GraphQL Java** - GraphQL implementation
-- **Docker & Docker Compose** - Containerization
-
-### Architecture Patterns
-- **Domain-Driven Design (DDD)** - Clear domain boundaries
-- **Database-per-Service** - Data ownership and autonomy
-- **API Gateway Pattern** - Single entry point for clients
-- **GraphQL Federation** - Unified schema across microservices
-- **CQRS & Event Sourcing Ready** - Prepared for advanced patterns
-- **Structured Concurrency** - JDK 24's modern concurrency model
-- **Virtual Threads** - Lightweight, high-throughput threading
-
-## 📁 Project Structure
-
-```
-spring-boot-netflix/
-├── 📁 services/                    # Phase 3: Microservices
-│   ├── gateway-service/           # GraphQL Federation Gateway
-│   ├── movies-service/            # Movies Domain Service
-│   ├── users-service/             # Users Domain Service
-│   └── reviews-service/           # Reviews Domain Service
-├── 📁 src/                        # Phase 1: Monolith
-│   ├── main/java/com/yourapp/
-│   │   ├── movies/               # Movies Domain
-│   │   ├── users/                # Users Domain
-│   │   ├── reviews/              # Reviews Domain
-│   │   └── common/               # Shared Components
-│   └── main/resources/
-├── 📄 docker-compose.yml         # Monolith + Database
-├── 📄 docker-compose-microservices.yml  # All Microservices
-├── 📄 README-Phase3.md           # Detailed microservices guide
-└── 📄 build.gradle               # Monolith build configuration
-```
-
-## 🎯 Feature Highlights
-
-### Phase 1: Structured Monolith
-✅ **Domain-Driven Architecture** - Clean separation of concerns
-✅ **REST APIs** - Full CRUD operations for Movies, Users, Reviews
-✅ **JPA Relationships** - Optimized queries with @EntityGraph
-✅ **Validation & Error Handling** - Comprehensive input validation
-✅ **Database Integration** - PostgreSQL with connection pooling
-✅ **Health Checks** - Spring Actuator monitoring
-
-### Phase 2: GraphQL Integration
-✅ **GraphQL Schema** - Type-safe API with custom scalars
-✅ **Data Fetchers** - Efficient resolvers with @QueryMapping
-✅ **Schema Stitching** - Combined REST and GraphQL APIs
-✅ **GraphiQL Interface** - Interactive query playground
-✅ **Computed Fields** - averageRating, reviewCount
-
-### Phase 3: Federated Microservices
-✅ **Service Independence** - Separate deployments and scaling
-✅ **GraphQL Federation** - @key directives for entity resolution
-✅ **Database per Service** - Complete data ownership
-✅ **Service Discovery** - Docker networking and health checks
-✅ **Cross-Service Queries** - Seamless data federation
-✅ **Production Ready** - Docker Compose orchestration
-
-### Phase 4: Structured Concurrency & Virtual Threads (JDK 24)
-✅ **Virtual Threads** - Lightweight threading model (thousands per service)
-✅ **Structured Concurrency** - Automatic lifecycle management and error handling
-✅ **Thread-per-Task Model** - Virtual thread executor for all async operations
-✅ **Service Isolation** - Dedicated thread pools per service and operation type
-✅ **GraphQL Async Execution** - Virtual threads for GraphQL query processing
-✅ **Fail-fast Patterns** - StructuredTaskScope with automatic cleanup
-
-## 🔍 GraphQL Federation Demo
-
-Query movies with reviews from multiple services:
-
-```graphql
-query MoviesWithReviews {
-  movies {
-    id
-    title
-    director
-    reviews {
-      id
-      rating
-      text
-      user {
-        username
-        fullName
-      }
-    }
-    averageRating
-    reviewCount
-  }
+```java
+@Service
+public class StructuredConcurrencyService {
+    
+    // Federated data fetching with multiple services
+    public <T> T executeFederatedQuery(List<Supplier<Object>> tasks, 
+                                      Function<List<Object>, T> combiner) throws Exception;
+    
+    // Batch operations with individual timeouts
+    public <T> List<T> executeBatch(List<Supplier<T>> tasks, 
+                                   Duration timeout) throws Exception;
+    
+    // Retry-enabled structured concurrency
+    public <T> T executeWithRetry(Supplier<T> task, 
+                                 RetryPolicy retryPolicy) throws Exception;
+    
+    // Performance monitoring wrapper
+    public <T> T executeWithMetrics(String operationName, 
+                                   Supplier<T> task) throws Exception;
 }
 ```
 
-This single query:
-1. Fetches movies from **Movies Service** (Port 8081)
-2. Resolves reviews from **Reviews Service** (Port 8083)
-3. Resolves user data from **Users Service** (Port 8082)
-4. All orchestrated by the **Gateway Service** (Port 8080)
+### 2. GraphQL Federation Resolvers
 
-## 🧪 Testing Examples
+**Location**: `services/gateway-service/src/main/java/com/netflix/gateway/graphql/`
 
-### REST API Testing
-```bash
-# Create a movie
-curl -X POST http://localhost:8081/api/movies \
-  -H "Content-Type: application/json" \
-  -d '{"title":"The Matrix","director":"Wachowski Sisters","genre":"Sci-Fi"}'
-
-# Create a user
-curl -X POST http://localhost:8082/api/users \
-  -H "Content-Type: application/json" \
-  -d '{"username":"johndoe","email":"john@example.com","password":"password123"}'
-
-# Create a review
-curl -X POST http://localhost:8083/api/reviews \
-  -H "Content-Type: application/json" \
-  -d '{"movieId":1,"userId":1,"rating":5,"text":"Amazing movie!"}'
-```
-
-### Virtual Thread & Concurrency Testing
-```bash
-# Test virtual thread performance with concurrent requests
-for i in {1..1000}; do
-  curl -s http://localhost:8081/api/movies &
-done
-wait
-
-# Monitor virtual thread count via Actuator
-curl http://localhost:8081/actuator/metrics/jvm.threads.virtual
-
-# Test structured concurrency with timeout scenarios
-curl -X POST http://localhost:8080/graphql \
-  -H "Content-Type: application/json" \
-  -d '{"query":"query { movies { title reviews { rating user { username } } } }"}'
-```
-
-### GraphQL Testing
-Visit the GraphiQL interfaces:
-- **Gateway**: http://localhost:8080/graphiql (Federated queries)
-- **Individual Services**: http://localhost:808{1,2,3}/graphiql
-
-### Structured Concurrency Testing
-```bash
-# Test concurrent GraphQL federation queries
-# This will trigger StructuredTaskScope across multiple services
-query ComplexFederatedQuery {
-  movies {
-    title
-    director
-    reviews {
-      rating
-      text
-      user {
-        username
-        fullName
-        email
-      }
-    }
-    averageRating
-    reviewCount
-  }
+```java
+@Controller
+public class FederatedMovieResolver {
+    
+    @Autowired
+    private StructuredConcurrencyService concurrencyService;
+    
+    @Autowired
+    private ServiceClientManager serviceClientManager;
+    
+    @QueryMapping
+    public MovieWithDetails movie(@Argument String id) throws Exception;
+    
+    @SchemaMapping(typeName = "Movie", field = "reviews")
+    public List<Review> movieReviews(Movie movie) throws Exception;
+    
+    @BatchMapping(typeName = "Review", field = "user")
+    public Map<Review, User> reviewUsers(List<Review> reviews) throws Exception;
 }
 ```
 
-### Load Testing with Virtual Threads
-```bash
-# Install hey for load testing
-# brew install hey (macOS)
-# apt install hey (Ubuntu)
+### 3. Service Client Manager
 
-# Test virtual thread scalability
-hey -n 10000 -c 100 http://localhost:8081/api/movies
+**Location**: `services/gateway-service/src/main/java/com/netflix/gateway/client/ServiceClientManager.java`
 
-# Monitor virtual thread metrics
-curl http://localhost:8081/actuator/metrics/jvm.threads.virtual | jq
+```java
+@Component
+public class ServiceClientManager {
+    
+    private final WebClient webClient;
+    private final ServiceConfiguration config;
+    
+    // Structured concurrency-enabled service calls
+    public CompletableFuture<MovieDto> getMovie(Long id);
+    public CompletableFuture<List<ReviewDto>> getReviews(Long movieId);
+    public CompletableFuture<List<UserDto>> getUsers(List<Long> userIds);
+    
+    // Batch operations
+    public CompletableFuture<List<MovieDto>> getMovies(List<Long> ids);
+    
+    // Health check with timeout
+    public CompletableFuture<Boolean> checkServiceHealth(String serviceName);
+}
 ```
 
-## 📈 Performance & Scalability
+### 4. Configuration Management
 
-### Current Optimizations
-- **Virtual Threads** - Lightweight concurrency (1M+ threads vs. 1000s OS threads)
-- **Structured Concurrency** - Automatic resource cleanup and cancellation
-- **Connection Pooling** - HikariCP for database connections
-- **Lazy Loading** - JPA FetchType.LAZY relationships
-- **N+1 Prevention** - @EntityGraph annotations
-- **Query Optimization** - Custom JPQL queries
-- **Health Monitoring** - Actuator endpoints
+**Location**: `services/gateway-service/src/main/java/com/netflix/gateway/config/StructuredConcurrencyProperties.java`
 
-### Structured Concurrency Benefits
-- **Thread Allocation**: `Executors.newVirtualThreadPerTaskExecutor()` per service
-- **Memory Efficiency**: Virtual threads use ~1KB vs. 1MB for OS threads
-- **Automatic Cleanup**: StructuredTaskScope ensures proper resource disposal
-- **Fail-fast Behavior**: ShutdownOnFailure scope for immediate error propagation
-- **Service Isolation**: Dedicated thread pools prevent resource contention
+```java
+@ConfigurationProperties(prefix = "structured-concurrency")
+@Data
+public class StructuredConcurrencyProperties {
+    
+    private Duration defaultTimeout = Duration.ofSeconds(5);
+    private Map<String, Duration> serviceTimeouts = new HashMap<>();
+    private RetryConfiguration retry = new RetryConfiguration();
+    private MonitoringConfiguration monitoring = new MonitoringConfiguration();
+    
+    @Data
+    public static class RetryConfiguration {
+        private int maxAttempts = 3;
+        private Duration backoffDelay = Duration.ofMillis(100);
+        private double backoffMultiplier = 2.0;
+    }
+    
+    @Data
+    public static class MonitoringConfiguration {
+        private boolean enabled = true;
+        private Duration metricsInterval = Duration.ofSeconds(30);
+        private List<String> trackedOperations = new ArrayList<>();
+    }
+}
+```
 
-### Virtual Thread Configuration
-- **Gateway Service**: `gateway-async-`, `gateway-graphql-` prefixes
-- **Movies Service**: `movies-async-`, `movies-graphql-` prefixes  
-- **Users Service**: `users-async-`, `users-graphql-` prefixes
-- **Reviews Service**: `reviews-async-`, `reviews-graphql-` prefixes
+### 5. Performance Monitoring
 
-### Scaling Strategy
-- **Horizontal Scaling** - Each service scales independently with virtual threads
-- **Database Sharding** - Separate databases per service
-- **Caching Layer** - Ready for Redis/Hazelcast integration
-- **Load Balancing** - Multiple instances per service
-- **Circuit Breakers** - Resilience patterns ready
-- **Thread Monitoring** - Virtual thread metrics via Actuator
+**Location**: `services/gateway-service/src/main/java/com/netflix/gateway/monitoring/StructuredConcurrencyMetrics.java`
 
-## 🔄 Evolution Roadmap
+```java
+@Component
+public class StructuredConcurrencyMetrics {
+    
+    private final MeterRegistry meterRegistry;
+    private final Timer.Builder timerBuilder;
+    private final Counter.Builder counterBuilder;
+    
+    // Metrics collection
+    public void recordOperationTime(String operation, Duration duration);
+    public void recordOperationSuccess(String operation);
+    public void recordOperationFailure(String operation, String errorType);
+    public void recordConcurrentTasks(String operation, int taskCount);
+    public void recordTimeoutOccurrence(String operation);
+    
+    // Virtual thread metrics
+    public void recordVirtualThreadCount();
+    public void recordVirtualThreadCreation();
+    public void recordVirtualThreadDestruction();
+}
+```
 
-### ✅ Completed Phases
-- [x] Phase 1: Structured Monolith with REST APIs
-- [x] Phase 2: GraphQL Integration & Schema Stitching
-- [x] Phase 3: Federated Microservices Architecture
+## Data Models
 
-### 🚀 Future Phases
-- [ ] **Phase 4**: Service Mesh (Istio/Linkerd)
-- [ ] **Phase 5**: Event-Driven Architecture (Kafka/RabbitMQ)
-- [ ] **Phase 6**: CQRS & Event Sourcing
-- [ ] **Phase 7**: Kubernetes Deployment
-- [ ] **Phase 8**: Observability & Monitoring (Prometheus/Grafana)
+### 1. Federated Response Models
 
-## 🏆 Learning Outcomes
+```java
+// Enhanced DTOs for federated responses
+public record MovieWithDetails(
+    MovieDto movie,
+    List<ReviewWithUser> reviews,
+    MovieStats stats
+) {}
 
-This project demonstrates:
+public record ReviewWithUser(
+    ReviewDto review,
+    UserDto user
+) {}
 
-🎯 **Microservices Patterns** - Service decomposition, database per service
-🎯 **GraphQL Federation** - Schema stitching across services
-🎯 **Spring Boot Mastery** - Advanced Spring ecosystem usage
-🎯 **Docker Orchestration** - Multi-service containerization
-🎯 **Database Design** - JPA relationships and optimization
-🎯 **API Design** - RESTful and GraphQL best practices
-🎯 **Testing Strategies** - Service and integration testing
-🎯 **DevOps Practices** - CI/CD ready structure
+public record MovieStats(
+    Float averageRating,
+    Integer reviewCount,
+    Integer userCount
+) {}
+```
 
-## 📚 Documentation
+### 2. Service Communication Models
 
-- **[README-Phase3.md](./README-Phase3.md)** - Detailed microservices documentation
-- **[API Documentation](./docs/api/)** - REST and GraphQL API references
-- **[Architecture Decisions](./docs/architecture/)** - ADRs and design decisions
+```java
+// Service call configuration
+public record ServiceCall<T>(
+    String serviceName,
+    String endpoint,
+    Duration timeout,
+    Class<T> responseType,
+    Map<String, Object> parameters
+) {}
 
-## 🤝 Contributing
+// Batch operation result
+public record BatchResult<T>(
+    List<T> successful,
+    List<ServiceError> failed,
+    Duration totalTime,
+    Map<String, Duration> individualTimes
+) {}
+```
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+### 3. Error Handling Models
 
-## 📄 License
+```java
+// Structured concurrency specific errors
+public class StructuredConcurrencyException extends Exception {
+    private final String operation;
+    private final List<String> failedServices;
+    private final Duration executionTime;
+}
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+public record ServiceError(
+    String serviceName,
+    String operation,
+    String errorMessage,
+    String errorType,
+    Duration attemptTime
+) {}
+```
 
-## 🙋‍♂️ Author
+## Error Handling
 
-**Tony Ross** - [GitHub](https://github.com/tony-ross)
+### 1. Failure Propagation Strategy
 
-*Building scalable, production-ready microservices with modern Java and Spring Boot*
+```java
+// Fail-fast with automatic cancellation
+try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+    var movieTask = scope.fork(() -> serviceClient.getMovie(id));
+    var reviewsTask = scope.fork(() -> serviceClient.getReviews(id));
+    var usersTask = scope.fork(() -> serviceClient.getUsers(userIds));
+    
+    scope.join();
+    scope.throwIfFailed(); // Automatically cancels remaining tasks on failure
+    
+    return combineResults(movieTask.resultNow(), reviewsTask.resultNow(), usersTask.resultNow());
+}
+```
 
----
+### 2. Partial Failure Handling
 
-⭐ **Star this repository** if you found it helpful for learning microservices architecture!
+```java
+// Graceful degradation for non-critical data
+try (var scope = new StructuredTaskScope.ShutdownOnSuccess<>()) {
+    // Critical data - must succeed
+    var movieTask = scope.fork(() -> serviceClient.getMovie(id));
+    
+    // Optional data - can fail gracefully
+    var reviewsTask = scope.fork(() -> {
+        try {
+            return serviceClient.getReviews(id);
+        } catch (Exception e) {
+            return Collections.emptyList(); // Graceful fallback
+        }
+    });
+    
+    scope.join();
+    return buildResponse(movieTask.resultNow(), reviewsTask.resultNow());
+}
+```
+
+### 3. Timeout and Retry Logic
+
+```java
+// Configurable timeout with exponential backoff retry
+public <T> T executeWithRetryAndTimeout(Supplier<T> task, String operation) throws Exception {
+    RetryPolicy policy = retryPolicies.get(operation);
+    Duration timeout = serviceTimeouts.getOrDefault(operation, defaultTimeout);
+    
+    for (int attempt = 1; attempt <= policy.maxAttempts(); attempt++) {
+        try {
+            return executeWithTimeout(task, timeout.toMillis());
+        } catch (TimeoutException e) {
+            if (attempt == policy.maxAttempts()) {
+                throw new StructuredConcurrencyException("Operation timed out after " + attempt + " attempts", operation);
+            }
+            Thread.sleep(policy.backoffDelay().toMillis() * (long) Math.pow(policy.backoffMultiplier(), attempt - 1));
+        }
+    }
+    throw new StructuredConcurrencyException("Retry attempts exhausted", operation);
+}
+```
+
+## Testing Strategy
+
+### 1. Unit Testing Approach
+
+```java
+@ExtendWith(MockitoExtension.class)
+class StructuredConcurrencyServiceTest {
+    
+    @Test
+    void shouldExecuteFederatedQuerySuccessfully() throws Exception {
+        // Test successful concurrent execution
+    }
+    
+    @Test
+    void shouldCancelRemainingTasksOnFailure() throws Exception {
+        // Test fail-fast behavior
+    }
+    
+    @Test
+    void shouldHandleTimeoutsCorrectly() throws Exception {
+        // Test timeout scenarios
+    }
+    
+    @Test
+    void shouldRetryFailedOperations() throws Exception {
+        // Test retry logic
+    }
+}
+```
+
+### 2. Integration Testing Strategy
+
+```java
+@SpringBootTest
+@TestPropertySource(properties = {
+    "structured-concurrency.default-timeout=PT2S",
+    "structured-concurrency.retry.max-attempts=2"
+})
+class FederatedGraphQLIntegrationTest {
+    
+    @Test
+    void shouldExecuteFederatedMovieQuery() {
+        // Test complete federated query flow
+    }
+    
+    @Test
+    void shouldHandleServiceFailureGracefully() {
+        // Test service failure scenarios
+    }
+    
+    @Test
+    void shouldMeetPerformanceRequirements() {
+        // Test performance benchmarks
+    }
+}
+```
+
+### 3. Load Testing Framework
+
+```java
+@Component
+public class StructuredConcurrencyLoadTest {
+    
+    public LoadTestResult executeConcurrentLoad(int concurrentUsers, Duration testDuration) {
+        // Simulate high concurrent load
+        // Measure virtual thread performance
+        // Compare with traditional thread pool performance
+    }
+    
+    public PerformanceComparison compareWithTraditionalApproach() {
+        // Benchmark structured concurrency vs traditional approaches
+    }
+}
+```
+
+### 4. Performance Monitoring Tests
+
+```java
+@Test
+void shouldExposeVirtualThreadMetrics() {
+    // Verify virtual thread metrics are available
+    // Check structured concurrency operation metrics
+    // Validate timeout and failure rate tracking
+}
+
+@Test
+void shouldProvidePerformanceInsights() {
+    // Test performance monitoring capabilities
+    // Verify bottleneck identification
+    // Check resource utilization tracking
+}
+```
+
+## Implementation Phases
+
+### Phase 1: Core Infrastructure
+- Enhanced StructuredConcurrencyService with federation support
+- Service client manager with WebClient integration
+- Configuration management for timeouts and retry policies
+- Basic error handling and logging
+
+### Phase 2: GraphQL Federation
+- Federated resolvers using structured concurrency
+- Batch data loading with concurrent execution
+- Cross-service data aggregation
+- Schema mapping with concurrent field resolution
+
+### Phase 3: Monitoring and Metrics
+- Performance metrics collection
+- Virtual thread monitoring
+- Operation success/failure tracking
+- Timeout and retry metrics
+
+### Phase 4: Advanced Features
+- Load testing framework
+- Performance comparison tools
+- Advanced retry strategies
+- Circuit breaker integration
+
+This design provides a comprehensive foundation for implementing structured concurrency patterns that address all the missing capabilities while maintaining the existing architecture's integrity and performance characteristics.
