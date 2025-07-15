@@ -1,4 +1,4 @@
-package com.netflix.movies.graphql.config;
+package com.netflix.reviews.graphql.config;
 
 import graphql.scalars.ExtendedScalars;
 import org.springframework.context.annotation.Bean;
@@ -12,11 +12,12 @@ public class GraphQLConfig {
     @Bean
     public RuntimeWiringConfigurer runtimeWiringConfigurer() {
         return wiringBuilder -> wiringBuilder
-                .scalar(ExtendedScalars.Date);
+                .scalar(ExtendedScalars.Date)
+                .scalar(ExtendedScalars.DateTime);
     }
 
     @Bean
     public VirtualThreadTaskExecutor graphqlExecutor() {
-        return new VirtualThreadTaskExecutor("movies-graphql-");
+        return new VirtualThreadTaskExecutor("reviews-graphql-");
     }
 }

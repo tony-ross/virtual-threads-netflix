@@ -83,7 +83,7 @@ docker-compose up -d
 ## 📊 Technology Stack
 
 ### Core Technologies
-- **Java 21** - Latest LTS with modern language features
+- **Java 24** - Latest LTS with Virtual Threads and Structured Concurrency
 - **Spring Boot 3.2.2** - Enterprise application framework
 - **Spring Data JPA** - Data persistence layer
 - **PostgreSQL 15** - Primary database
@@ -96,6 +96,8 @@ docker-compose up -d
 - **API Gateway Pattern** - Single entry point for clients
 - **GraphQL Federation** - Unified schema across microservices
 - **CQRS & Event Sourcing Ready** - Prepared for advanced patterns
+- **Structured Concurrency** - JDK 24's modern concurrency model
+- **Virtual Threads** - Lightweight, high-throughput threading
 
 ## 📁 Project Structure
 
@@ -143,6 +145,14 @@ spring-boot-netflix/
 ✅ **Service Discovery** - Docker networking and health checks
 ✅ **Cross-Service Queries** - Seamless data federation
 ✅ **Production Ready** - Docker Compose orchestration
+
+### Phase 4: Structured Concurrency & Virtual Threads (JDK 24)
+✅ **Virtual Threads** - Lightweight threading model (thousands per service)
+✅ **Structured Concurrency** - Automatic lifecycle management and error handling
+✅ **Thread-per-Task Model** - Virtual thread executor for all async operations
+✅ **Service Isolation** - Dedicated thread pools per service and operation type
+✅ **GraphQL Async Execution** - Virtual threads for GraphQL query processing
+✅ **Fail-fast Patterns** - StructuredTaskScope with automatic cleanup
 
 ## 🔍 GraphQL Federation Demo
 
@@ -195,26 +205,95 @@ curl -X POST http://localhost:8083/api/reviews \
   -d '{"movieId":1,"userId":1,"rating":5,"text":"Amazing movie!"}'
 ```
 
+### Virtual Thread & Concurrency Testing
+```bash
+# Test virtual thread performance with concurrent requests
+for i in {1..1000}; do
+  curl -s http://localhost:8081/api/movies &
+done
+wait
+
+# Monitor virtual thread count via Actuator
+curl http://localhost:8081/actuator/metrics/jvm.threads.virtual
+
+# Test structured concurrency with timeout scenarios
+curl -X POST http://localhost:8080/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query":"query { movies { title reviews { rating user { username } } } }"}'
+```
+
 ### GraphQL Testing
 Visit the GraphiQL interfaces:
 - **Gateway**: http://localhost:8080/graphiql (Federated queries)
 - **Individual Services**: http://localhost:808{1,2,3}/graphiql
 
+### Structured Concurrency Testing
+```bash
+# Test concurrent GraphQL federation queries
+# This will trigger StructuredTaskScope across multiple services
+query ComplexFederatedQuery {
+  movies {
+    title
+    director
+    reviews {
+      rating
+      text
+      user {
+        username
+        fullName
+        email
+      }
+    }
+    averageRating
+    reviewCount
+  }
+}
+```
+
+### Load Testing with Virtual Threads
+```bash
+# Install hey for load testing
+# brew install hey (macOS)
+# apt install hey (Ubuntu)
+
+# Test virtual thread scalability
+hey -n 10000 -c 100 http://localhost:8081/api/movies
+
+# Monitor virtual thread metrics
+curl http://localhost:8081/actuator/metrics/jvm.threads.virtual | jq
+```
+
 ## 📈 Performance & Scalability
 
 ### Current Optimizations
+- **Virtual Threads** - Lightweight concurrency (1M+ threads vs. 1000s OS threads)
+- **Structured Concurrency** - Automatic resource cleanup and cancellation
 - **Connection Pooling** - HikariCP for database connections
 - **Lazy Loading** - JPA FetchType.LAZY relationships
 - **N+1 Prevention** - @EntityGraph annotations
 - **Query Optimization** - Custom JPQL queries
 - **Health Monitoring** - Actuator endpoints
 
+### Structured Concurrency Benefits
+- **Thread Allocation**: `Executors.newVirtualThreadPerTaskExecutor()` per service
+- **Memory Efficiency**: Virtual threads use ~1KB vs. 1MB for OS threads
+- **Automatic Cleanup**: StructuredTaskScope ensures proper resource disposal
+- **Fail-fast Behavior**: ShutdownOnFailure scope for immediate error propagation
+- **Service Isolation**: Dedicated thread pools prevent resource contention
+
+### Virtual Thread Configuration
+- **Gateway Service**: `gateway-async-`, `gateway-graphql-` prefixes
+- **Movies Service**: `movies-async-`, `movies-graphql-` prefixes  
+- **Users Service**: `users-async-`, `users-graphql-` prefixes
+- **Reviews Service**: `reviews-async-`, `reviews-graphql-` prefixes
+
 ### Scaling Strategy
-- **Horizontal Scaling** - Each service scales independently
+- **Horizontal Scaling** - Each service scales independently with virtual threads
 - **Database Sharding** - Separate databases per service
 - **Caching Layer** - Ready for Redis/Hazelcast integration
 - **Load Balancing** - Multiple instances per service
 - **Circuit Breakers** - Resilience patterns ready
+- **Thread Monitoring** - Virtual thread metrics via Actuator
 
 ## 🔄 Evolution Roadmap
 
