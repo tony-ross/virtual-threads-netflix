@@ -1,10 +1,89 @@
-# Design Document
+# Netflix-Style GraphQL Microservices with JDK 24 Structured Concurrency
 
-## Overview
+This is my modern take on Netflix's federated GraphQL architecture! This project is intended to showcase how to build high-performance microservices using JDK 24's cutting-edge structured concurrency features alongside virtual threads.
 
-This design implements practical structured concurrency patterns in the Netflix-style federated GraphQL microservices project using JDK 24's structured concurrency capabilities. The implementation transforms the existing theoretical foundation into a production-ready system that demonstrates concurrent data fetching, cross-service federation, timeout handling, and performance monitoring.
+## What Makes This Special
 
-The design leverages `StructuredTaskScope` for automatic resource management, fail-fast behavior, and timeout handling across the microservices architecture, with particular focus on GraphQL federation scenarios where multiple services need to be called concurrently.
+This isn't just another demo - I am aiming to deliver apractical implementation that solves real-world problems you'd face at scale. I've built a movie streaming platform backend that handles concurrent data fetching across multiple services while maintaining reliability and performance.
+
+### Key Highlights
+
+🚀 **JDK 24 Structured Concurrency**: Uses `StructuredTaskScope` for bulletproof concurrent operations  
+🧵 **Virtual Threads**: Handles massive concurrency with minimal resource overhead  
+🔗 **GraphQL Federation**: Seamlessly combines data from multiple services  
+⚡ **Performance First**: Built for high-throughput, low-latency scenarios  
+🛡️ **Resilient Design**: Automatic timeout handling and fail-fast behavior  
+📊 **Production Ready**: Comprehensive monitoring and metrics
+
+## The Problem We're Solving
+
+Traditional microservices often struggle with:
+- Complex async programming patterns
+- Resource-heavy thread management
+- Difficult error propagation across services
+- Timeout and retry complexity
+- Performance bottlenecks in federated queries
+
+This solution leverages JDK 24's structured concurrency to make concurrent programming as simple as sequential code, while virtual threads handle massive scale effortlessly.
+
+## Quick Start
+
+### Prerequisites
+- JDK 24 (or JDK 21 for development)
+- Docker & Docker Compose
+- Gradle 8.8+
+
+### Running the Services
+```bash
+# Build all services
+./gradlew build
+
+# Start with Docker Compose
+docker-compose up -d
+
+# Or run individual services
+./gradlew :services:gateway-service:bootRun
+./gradlew :services:movies-service:bootRun
+./gradlew :services:reviews-service:bootRun
+./gradlew :services:users-service:bootRun
+```
+
+### Try It Out
+Once running, visit:
+- **GraphQL Playground**: http://localhost:8080/graphiql
+- **Gateway Health**: http://localhost:8080/actuator/health
+- **Metrics**: http://localhost:8080/actuator/metrics
+
+## Key Architectural Decisions
+
+### Why Structured Concurrency?
+Traditional async programming with CompletableFuture chains becomes complex and error-prone at scale. Structured concurrency provides:
+
+- **Automatic Resource Management**: Tasks are automatically cancelled when their parent scope ends
+- **Clear Error Propagation**: Failures bubble up predictably without complex exception handling
+- **Simplified Debugging**: Stack traces remain readable and meaningful
+- **Guaranteed Cleanup**: No more leaked threads or hanging operations
+
+### Why Virtual Threads?
+Virtual threads solve the classic thread-per-request scalability problem:
+
+- **Massive Concurrency**: Handle millions of concurrent requests with minimal memory
+- **Blocking-Friendly**: Write simple blocking code that scales like async
+- **Existing Code Compatible**: Drop-in replacement for traditional threads
+- **Resource Efficient**: Orders of magnitude less memory per thread
+
+### Service Communication Strategy
+We chose a hybrid approach for inter-service communication:
+
+- **Synchronous GraphQL Federation**: For user-facing queries requiring immediate consistency
+- **Structured Concurrency**: For coordinating multiple service calls efficiently  
+- **Circuit Breakers**: For resilience against cascading failures
+- **Graceful Degradation**: Non-critical data can fail without breaking the entire response
+
+### Data Consistency Model
+- **Eventually Consistent**: Between services for performance
+- **Strongly Consistent**: Within service boundaries
+- **Compensating Actions**: For distributed transaction scenarios
 
 ## Architecture
 
